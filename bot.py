@@ -5,9 +5,9 @@ import json
 import os
 import time
 
-api_id = int(os.environ[35598649])
-api_hash = os.environ[c2818a1b61c263997d48305e16a908c2]
-bot_token = os.environ[8486338907:AAGCsp9M2E8KHW1JADGNBTZz39p7rUNRvOM]
+api_id = int(os.environ["35598649"])
+api_hash = os.environ["c2818a1b61c263997d48305e16a908c2"]
+bot_token = os.environ["8486338907:AAGCsp9M2E8KHW1JADGNBTZz39p7rUNRvOM"]
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 MEDIA_DIR = os.path.join(BOT_DIR, "media")
