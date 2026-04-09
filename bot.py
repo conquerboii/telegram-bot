@@ -1,5 +1,3 @@
-# bot.py - Corrected Full Version
-
 from telethon import TelegramClient, events
 from telethon.tl.types import Channel, Chat
 import asyncio
@@ -7,25 +5,19 @@ import json
 import os
 import time
 
-# -------------------------
-# API Details (Environment Variables)
-api_id = int(os.environ["TELEGRAM_API_ID"])       # API ID
-api_hash = os.environ["TELEGRAM_API_HASH"]        # API Hash
-bot_token = os.environ["TELEGRAM_BOT_TOKEN"]      # Bot Token
+# ── Environment Variables ────────────────────────────────────────────────
+api_id = int(os.environ["TELEGRAM_API_ID"])
+api_hash = os.environ["TELEGRAM_API_HASH"]
+bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
 
-# -------------------------
-# Directories & Data File
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 MEDIA_DIR = os.path.join(BOT_DIR, "media")
 DATA_FILE = os.path.join(BOT_DIR, "data.json")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
-# -------------------------
-# Client Setup
 client = TelegramClient('bot_session', api_id, api_hash)
 
-# -------------------------
-# Load/Save Data
+# ── Data load/save ───────────────────────────────────────────────────────
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
@@ -38,8 +30,6 @@ def save_data(d):
 
 data = load_data()
 
-# -------------------------
-# Helper Functions
 def get_active_gid(user_id):
     uid = str(user_id)
     gid = data["user_active"].get(uid)
@@ -98,13 +88,12 @@ async def send_item(item, gid):
         elif caption:
             await client.send_message(chat, caption)
 
-# ── Handlers ────────────────────────────────────────────────────────────────
-
+# ── /getid handler ───────────────────────────────────────────────────────
 @client.on(events.NewMessage(pattern='/getid'))
 async def getid_handler(event):
     chat_id = event.chat_id
     if event.is_private:
-        await event.reply(f"📍 Tera User ID: `{chat_id}`", parse_mode="md")
+        await event.reply(f"📍 Tera User ID: `{chat_id}`")
     else:
         chat = await event.get_chat()
         name = getattr(chat, 'title', 'Unknown')
@@ -115,21 +104,22 @@ async def getid_handler(event):
         else:
             full_id = str(chat_id)
         await event.reply(
-            f"📍 *Group/Channel ID:*\n`{full_id}`\n\n"
-            f"📛 Name: {name}\n\n"
-            f"Bot ke private chat mein yeh bhejo:\n`/addgroup {full_id} {name}`",
-            parse_mode="md"
+            f"📍 *Group/Channel ID:*\n`{full_id}`\n📛 Name: {name}\n\n"
+            f"Bot ke private chat mein bhejo:\n`/addgroup {full_id} {name}`"
         )
 
+# ── Main handler ─────────────────────────────────────────────────────────
 @client.on(events.NewMessage)
 async def handler(event):
-    if not event.is_private:
-        return
-
     text = event.raw_text or ""
     uid = str(event.sender_id)
+    is_command = text.startswith("/")
 
-    # ── Forwarded message → extract chat ID ──
+    # ── Ignore non-command messages in groups ──
+    if not event.is_private and not is_command:
+        return
+
+    # ── Forwarded messages → extract chat ID ──
     if event.message.forward and not text.startswith("/"):
         fwd = event.message.forward
         orig_id = None
@@ -153,27 +143,60 @@ async def handler(event):
             print(f"Forward extract error: {e}")
 
         if orig_id:
-            await event.reply(
-                f"📍 *Chat ID:* `{orig_id}`\n"
-                f"📛 *Name:* {orig_name}\n\n"
-                f"Add karne ke liye:\n`/addgroup {orig_id} {orig_name}`",
-                parse_mode="md"
-            )
+            await event.reply(f"📍 Chat ID: `{orig_id}`\n📛 Name: {orig_name}\n`/addgroup {orig_id} {orig_name}`")
         else:
-            await event.reply(
-                "⚠️ ID nahi mil rahi.\n\n"
-                "*Telegram Web se karo:*\n"
-                "1. web.telegram.org kholo\n"
-                "2. Channel/Group open karo\n"
-                "3. URL mein number copy karo",
-                parse_mode="md"
-            )
+            await event.reply("⚠️ ID nahi mil rahi. Telegram Web se URL check karo.")
         return
 
-    # ── Save content to queue ──
-    # ... baki ka code same hai, syntax errors fix kiye hain
+    # ── Commands / Private Messages ──
+    if text == "/start":
+        await event.reply("👋 Bot ready hai! Use `/help` dekh lo.")
 
-# ── Scheduler ────────────────────────────────────────────────────────────────
+    elif text.startswith("/addgroup"):
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            await event.reply("Usage: `/addgroup <group_id> <naam>`")
+            return
+        raw_id, name = parts[1], parts[2]
+        try:
+            _, full_id, tg_name = await verify_chat(raw_id)
+        except ValueError as e:
+            await event.reply(f"❌ {e}")
+            return
+        data["groups"][full_id] = {
+            "name": name,
+            "queue": data["groups"].get(full_id, {}).get("queue", []),
+            "posting": data["groups"].get(full_id, {}).get("posting", False),
+            "interval_sec": data["groups"].get(full_id, {}).get("interval_sec", 3600),
+            "last_sent": data["groups"].get(full_id, {}).get("last_sent", 0),
+        }
+        data["user_active"][uid] = full_id
+        save_data(data)
+        await event.reply(f"✅ Verified & Added: {tg_name} ({full_id})")
+
+    elif text.startswith("/broadcast"):
+        parts = text.split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+        if arg == "on":
+            data.setdefault("user_broadcast", {})[uid] = True
+            save_data(data)
+            await event.reply("📢 Broadcast ON — ab sabhi groups me messages jayenge!")
+        elif arg == "off":
+            data.setdefault("user_broadcast", {})[uid] = False
+            save_data(data)
+            active_gid = get_active_gid(event.sender_id)
+            active_name = data["groups"][active_gid]["name"] if active_gid else "koi nahi"
+            await event.reply(f"📢 Broadcast OFF — sirf active group: {active_name}")
+        else:
+            is_on = data.get("user_broadcast", {}).get(uid, False)
+            await event.reply(f"Broadcast: {'ON' if is_on else 'OFF'}")
+
+    elif text == "/help":
+        await event.reply(
+            "Commands:\n/start\n/addgroup <id> <name>\n/broadcast on/off\n/getid"
+        )
+
+# ── Scheduler ─────────────────────────────────────────────────────────────
 async def scheduler():
     while True:
         now = time.time()
@@ -202,12 +225,10 @@ async def scheduler():
             print(f"✅ [{g['name']}] Sent {sent}/{len(to_send)} (next in {interval//60} min)")
         await asyncio.sleep(30)
 
+# ── Main ────────────────────────────────────────────────────────────────
 async def main():
     await client.start(bot_token=bot_token)
-    print("🤖 Bot running — posting state restored from disk")
-    for gid, g in data["groups"].items():
-        if g.get("posting"):
-            print(f"  ▶️ {g['name']} posting ON (interval: {g.get('interval_sec',3600)//60} min)")
+    print("🤖 Bot running")
     client.loop.create_task(scheduler())
     await client.run_until_disconnected()
 
