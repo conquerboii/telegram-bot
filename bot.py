@@ -4,20 +4,24 @@ import asyncio
 import json
 import os
 import time
+from dotenv import load_dotenv
 
-# ------------------ ENV VARIABLES ------------------
+# ── Environment Variables ─────────────────────────────────────────────
+load_dotenv()
 api_id = int(os.environ["TELEGRAM_API_ID"])
 api_hash = os.environ["TELEGRAM_API_HASH"]
 bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
 
+# ── Directories ───────────────────────────────────────────────────────
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 MEDIA_DIR = os.path.join(BOT_DIR, "media")
 DATA_FILE = os.path.join(BOT_DIR, "data.json")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
+# ── Client ────────────────────────────────────────────────────────────
 client = TelegramClient('bot_session', api_id, api_hash)
 
-# ------------------ DATA HANDLING ------------------
+# ── Data Load/Save ───────────────────────────────────────────────────
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
@@ -30,6 +34,7 @@ def save_data(d):
 
 data = load_data()
 
+# ── Helper Functions ──────────────────────────────────────────────────
 def get_active_gid(user_id):
     uid = str(user_id)
     gid = data["user_active"].get(uid)
@@ -88,87 +93,42 @@ async def send_item(item, gid):
         elif caption:
             await client.send_message(chat, caption)
 
-# ------------------ COMMANDS ------------------
-@client.on(events.NewMessage(pattern='/getid'))
-async def getid_handler(event):
-    chat_id = event.chat_id
-    if event.is_private:
-        await event.reply(f"📍 Tera User ID: `{chat_id}`", parse_mode="md")
-    else:
-        chat = await event.get_chat()
-        name = getattr(chat, 'title', 'Unknown')
-        if isinstance(chat, Channel):
-            full_id = f"-100{chat.id}"
-        elif isinstance(chat, Chat):
-            full_id = f"-{chat.id}"
-        else:
-            full_id = str(chat_id)
-        await event.reply(
-            f"📍 *Group/Channel ID:*\n`{full_id}`\n📛 Name: {name}\n\n"
-            f"Bot ke private chat mein bhejo:\n`/addgroup {full_id} {name}`",
-            parse_mode="md"
-        )
-
+# ── Event Handler ────────────────────────────────────────────────────
 @client.on(events.NewMessage)
 async def handler(event):
-    if not event.is_private:
-        return  # Only private messages
-
     text = event.raw_text or ""
     uid = str(event.sender_id)
 
-    # ------------------ FORWARDED MESSAGE ------------------
-    if event.message.forward and not text.startswith("/"):
-        fwd = event.message.forward
-        orig_id = None
-        orig_name = "Unknown"
-        try:
-            if fwd.channel_id:
-                orig_id = f"-100{fwd.channel_id}"
-                ch = await client.get_entity(fwd.channel_id)
-                orig_name = getattr(ch, 'title', str(fwd.channel_id))
-        except Exception as e:
-            print(f"Forward extract error: {e}")
-        if orig_id:
-            await event.reply(
-                f"📍 *Chat ID:* `{orig_id}`\n📛 *Name:* {orig_name}\n\n"
-                f"Add karne ke liye:\n`/addgroup {orig_id} {orig_name}`",
-                parse_mode="md"
-            )
-        return
-
-    # ------------------ COMMAND HANDLER ------------------
+    # ── Commands ──────────────────────────────────────────────────────
     if text.startswith("/"):
-        # START
-        if text == "/start":
+        cmd = text.split()[0]
+
+        # ── /start ─────────────────────────────
+        if cmd == "/start":
             await event.reply(
-                "👋 *Bot ready!*\n\n"
-                "Commands:\n"
-                "/getid — ID pata karo\n"
-                "/addgroup <id> <name> — Add group\n"
-                "/groups — List groups\n"
-                "/select <number> — Select active group\n"
-                "/removegroup <number> — Remove group\n"
-                "/setinterval <minutes> — Interval set\n"
-                "/broadcast on/off — Broadcast mode\n"
-                "/start_posting /stop_posting — Active group post\n"
-                "/start_all /stop_all — All groups post\n"
-                "/send_now — Turant bhejo queue\n"
-                "/clear — Clear queue\n"
-                "/status — Info\n"
-                "/test_connection — Check connection",
+                "👋 *Bot ready hai!*\n\n"
+                "/groups — groups dekho\n"
+                "/addgroup <id> <name> — add karo\n"
+                "/broadcast on/off\n"
+                "/start_posting — posting start\n"
+                "/help — full list",
                 parse_mode="md"
             )
             return
 
-        # Add group
-        elif text.startswith("/addgroup"):
+        # ── /getid ─────────────────────────────
+        if cmd == "/getid":
+            chat_id = event.chat_id
+            await event.reply(f"📍 ID: `{chat_id}`", parse_mode="md")
+            return
+
+        # ── /addgroup ──────────────────────────
+        if cmd == "/addgroup":
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await event.reply("Usage: `/addgroup <group_id> <naam>`", parse_mode="md")
                 return
             raw_id, name = parts[1], parts[2]
-            await event.reply("⏳ Telegram se verify ho raha hai...", parse_mode="md")
             try:
                 _, full_id, tg_name = await verify_chat(raw_id)
             except ValueError as e:
@@ -177,110 +137,98 @@ async def handler(event):
             data["groups"][full_id] = {
                 "name": name,
                 "queue": data["groups"].get(full_id, {}).get("queue", []),
-                "posting": False,
-                "interval_sec": 3600,
-                "last_sent": 0,
+                "posting": data["groups"].get(full_id, {}).get("posting", False),
+                "interval_sec": data["groups"].get(full_id, {}).get("interval_sec", 3600),
+                "last_sent": data["groups"].get(full_id, {}).get("last_sent", 0),
             }
             data["user_active"][uid] = full_id
             save_data(data)
-            await event.reply(f"✅ Added & Verified: {tg_name}", parse_mode="md")
+            await event.reply(f"✅ *Added & Verified!* {name}", parse_mode="md")
             return
 
-        # Select active group
-        elif text.startswith("/select"):
+        # ── /broadcast ─────────────────────────
+        if cmd == "/broadcast":
+            arg = text.split(maxsplit=1)[1].strip().lower() if len(text.split())>1 else ""
+            if arg == "on":
+                data.setdefault("user_broadcast", {})[uid] = True
+                save_data(data)
+                await event.reply("📢 Broadcast ON!", parse_mode="md")
+            elif arg == "off":
+                data.setdefault("user_broadcast", {})[uid] = False
+                save_data(data)
+                await event.reply("📢 Broadcast OFF!", parse_mode="md")
+            else:
+                is_on = data.get("user_broadcast", {}).get(uid, False)
+                await event.reply(f"Broadcast: {'ON' if is_on else 'OFF'}", parse_mode="md")
+            return
+
+        # ── /groups ────────────────────────────
+        if cmd == "/groups":
+            active_gid = get_active_gid(event.sender_id)
+            msg = "📋 *Groups:*\n\n" + groups_list_text(active_gid)
+            await event.reply(msg, parse_mode="md")
+            return
+
+        # ── /select ────────────────────────────
+        if cmd == "/select":
             parts = text.split(maxsplit=1)
-            if len(parts) < 2 or not parts[1].isdigit():
+            if len(parts)<2 or not parts[1].isdigit():
                 await event.reply("Usage: `/select <number>`", parse_mode="md")
                 return
             idx = int(parts[1])
             gid = group_index_to_id(idx)
             if not gid:
-                await event.reply("❌ Number invalid.", parse_mode="md")
+                await event.reply(f"❌ Number {idx} nahi mila.", parse_mode="md")
                 return
             data["user_active"][uid] = gid
             save_data(data)
-            await event.reply(f"✅ Active: {data['groups'][gid]['name']}", parse_mode="md")
+            g = data["groups"][gid]
+            await event.reply(f"✅ Active: *{g['name']}*", parse_mode="md")
             return
 
-        # Start posting
-        elif text == "/start_posting":
-            gid = get_active_gid(event.sender_id)
-            if not gid:
-                await event.reply("❗ Pehle `/select <number>` se group choose karo.", parse_mode="md")
-                return
-            data["groups"][gid]["posting"] = True
-            save_data(data)
-            await event.reply(f"🟢 Posting start: {data['groups'][gid]['name']}", parse_mode="md")
-            return
-
-        # Stop posting
-        elif text == "/stop_posting":
-            gid = get_active_gid(event.sender_id)
-            if not gid:
-                await event.reply("❗ Pehle `/select <number>` se group choose karo.", parse_mode="md")
-                return
-            data["groups"][gid]["posting"] = False
-            save_data(data)
-            await event.reply(f"🔴 Posting stop: {data['groups'][gid]['name']}", parse_mode="md")
-            return
-
-        # Broadcast on/off
-        elif text.startswith("/broadcast"):
-            parts = text.split(maxsplit=1)
-            arg = parts[1].lower() if len(parts) > 1 else ""
-            if arg == "on":
-                data.setdefault("user_broadcast", {})[uid] = True
-            elif arg == "off":
-                data.setdefault("user_broadcast", {})[uid] = False
-            save_data(data)
-            await event.reply(f"📢 Broadcast: {data.get('user_broadcast', {}).get(uid, False)}", parse_mode="md")
-            return
-
-    # ------------------ MESSAGE QUEUE ------------------
-    # Save text/photo to active group queue
-    if text and not text.startswith("/"):
+    # ── Save content to queue ───────────────────────────────────────────
+    if not text.startswith("/"):
         gid = get_active_gid(event.sender_id)
         if not gid:
-            await event.reply("❗ Pehle `/select <number>` se group choose karo.", parse_mode="md")
             return
-        item = {"type": "text", "content": text}
-        data["groups"][gid].setdefault("queue", []).append(item)
+        g = data["groups"][gid]
+        if event.photo:
+            filename = f"photo_{event.id}.jpg"
+            filepath = os.path.join(MEDIA_DIR, filename)
+            await event.message.download_media(file=filepath)
+            g.setdefault("queue", []).append({"type":"photo","path":filepath,"caption":text})
+        elif text:
+            g.setdefault("queue", []).append({"type":"text","content":text})
         save_data(data)
-        await event.reply(f"✅ Message saved to queue → {data['groups'][gid]['name']}", parse_mode="md")
+        await event.reply(f"✅ Saved → *{g['name']}*", parse_mode="md")
+        return
 
-# ------------------ SCHEDULER ------------------
+# ── Scheduler ──────────────────────────────────────────────────────────
 async def scheduler():
     while True:
         now = time.time()
         for gid, g in list(data["groups"].items()):
-            if not g.get("posting"):
-                continue
+            if not g.get("posting"): continue
             queue = g.get("queue", [])
-            if not queue:
-                continue
-            interval = g.get("interval_sec", 3600)
-            last_sent = g.get("last_sent", 0)
-            if now - last_sent < interval:
-                continue
+            if not queue: continue
+            interval = g.get("interval_sec",3600)
+            last_sent = g.get("last_sent",0)
+            if now - last_sent < interval: continue
             to_send = queue[:10]
             g["queue"] = queue[10:]
             g["last_sent"] = now
             save_data(data)
             for item in to_send:
-                try:
-                    await send_item(item, gid)
-                    await asyncio.sleep(1)
-                except Exception as e:
-                    print(f"[{g['name']}] Error: {e}")
-            print(f"✅ [{g['name']}] Sent {len(to_send)} items (next in {interval//60} min)")
-        await asyncio.sleep(5)
+                try: await send_item(item,gid); await asyncio.sleep(2)
+                except Exception as e: print(f"[{g['name']}] Error: {e}")
+        await asyncio.sleep(10)
 
-# ------------------ MAIN ------------------
+# ── Main ───────────────────────────────────────────────────────────────
 async def main():
     await client.start(bot_token=bot_token)
-    print("🤖 Bot running — posting state restored")
+    print("🤖 Bot running")
     client.loop.create_task(scheduler())
     await client.run_until_disconnected()
 
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
