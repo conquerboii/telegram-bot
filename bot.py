@@ -5,9 +5,9 @@ import json
 import os
 import time
 
-api_id = int(os.environ["35598649"])
-api_hash = os.environ["c2818a1b61c263997d48305e16a908c2"]
-bot_token = os.environ["8486338907:AAGCsp9M2E8KHW1JADGNBTZz39p7rUNRvOM"]
+api_id = int(os.environ["TELEGRAM_API_ID"])
+api_hash = os.environ["TELEGRAM_API_HASH"]
+bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 MEDIA_DIR = os.path.join(BOT_DIR, "media")
@@ -257,6 +257,228 @@ async def handler(event):
             return
         link = parts[1].strip()
         await event.reply("⏳ Join ho raha hai...", parse_mode="md")
+        try:
+            from telethon.tl.functions.messages import ImportChatInviteRequest
+            from telethon.tl.functions.channels import JoinChannelRequest
+            if "t.me/+" in link:
+                invite_hash = link.split("t.me/+")[1].strip()
+                updates = await client(ImportChatInviteRequest(invite_hash))
+                chat = updates.chats[0]
+            elif "t.me/" in link:
+                username = link.split("t.me/")[1].strip().lstrip("@")
+                entity = await client.get_entity(username)
+                await client(JoinChannelRequest(entity))
+                chat = entity
+            else:
+                await event.reply("❌ Invalid link.", parse_mode="md")
+                return
+            full_id = f"-100{chat.id}" if isinstance(chat, Channel) else f"-{chat.id}"
+            chat_name = getattr(chat, 'title', 'Unknown')
+            data["groups"][full_id] = {"name": chat_name, "queue": [], "posting": False, "interval_sec": 3600, "last_sent": 0}
+            data["user_active"][uid] = full_id
+            save_data(data)
+            await event.reply(
+                f"✅ *Joined & Added!*\n"
+                f"📛 Name: {chat_name}\n"
+                f"📍 ID: `{full_id}`\n"
+                f"Active bhi set ho gaya!",
+                parse_mode="md"
+            )
+        except Exception as e:
+            err = str(e)
+            if "already" in err.lower() or "USER_ALREADY" in err:
+                await event.reply("ℹ️ Bot pehle se is group mein hai.\nForward karke ID lo ya `/addgroup <id> <naam>` karo.", parse_mode="md")
+            else:
+                await event.reply(f"❌ Error: `{err}`\n\nChannel ke liye: channel admin se bot ko manually add karwao.", parse_mode="md")
+
+    elif text == "/groups":
+        active_gid = get_active_gid(event.sender_id)
+        msg = "📋 *Tere Groups/Channels:*\n\n" + groups_list_text(active_gid)
+        if data["groups"]:
+            msg += "\n\n`/select <number>` se select karo"
+        await event.reply(msg, parse_mode="md")
+
+    elif text.startswith("/select"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip().isdigit():
+            await event.reply("Usage: `/select <number>`\n`/groups` se number dekho.", parse_mode="md")
+            return
+        idx = int(parts[1].strip())
+        gid = group_index_to_id(idx)
+        if not gid:
+            await event.reply(f"❌ Number {idx} nahi mila. `/groups` se dekho.", parse_mode="md")
+            return
+        data["user_active"][uid] = gid
+        save_data(data)
+        g = data["groups"][gid]
+        interval_min = g.get("interval_sec", 3600) // 60
+        await event.reply(
+            f"✅ Active: *{g['name']}*\n"
+            f"Queue: {len(g.get('queue',[]))} items\n"
+            f"Interval: {interval_min} min\n"
+            f"Posting: {'🟢 On' if g.get('posting') else '🔴 Off'}",
+            parse_mode="md"
+        )
+
+    elif text.startswith("/setgroup"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            await event.reply("Usage: `/setgroup <id>` ya `/select <number>`", parse_mode="md")
+            return
+        val = parts[1].strip()
+        gid = group_index_to_id(int(val)) if val.isdigit() else (val if val in data["groups"] else None)
+        if not gid:
+            await event.reply("❌ Group nahi mila. `/groups` se dekho.", parse_mode="md")
+            return
+        data["user_active"][uid] = gid
+        save_data(data)
+        g = data["groups"][gid]
+        await event.reply(f"✅ Active: *{g['name']}* (Queue: {len(g.get('queue',[]))})", parse_mode="md")
+
+    elif text.startswith("/removegroup"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            await event.reply("Usage: `/removegroup <number>`\n`/groups` se number dekho.", parse_mode="md")
+            return
+        val = parts[1].strip()
+        gid = group_index_to_id(int(val)) if val.isdigit() else (val if val in data["groups"] else None)
+        if not gid:
+            await event.reply("❌ Group nahi mila.", parse_mode="md")
+            return
+        name = data["groups"][gid]["name"]
+        del data["groups"][gid]
+        if data["user_active"].get(uid) == gid:
+            data["user_active"].pop(uid, None)
+        save_data(data)
+        await event.reply(f"🗑️ Removed: *{name}*", parse_mode="md")
+
+    elif text.startswith("/setinterval"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip().isdigit():
+            await event.reply("Usage: `/setinterval <minutes>`\nExample: `/setinterval 60` = 1 ghanta", parse_mode="md")
+            return
+        minutes = int(parts[1].strip())
+        if minutes < 1:
+            await event.reply("❌ Minimum 1 minute.", parse_mode="md")
+            return
+        gid = get_active_gid(event.sender_id)
+        if not gid:
+            await event.reply("❗ Pehle `/select <number>` se group choose karo.", parse_mode="md")
+            return
+        data["groups"][gid]["interval_sec"] = minutes * 60
+        save_data(data)
+        await event.reply(f"⏱ Interval set: *{minutes} minutes* → *{data['groups'][gid]['name']}*", parse_mode="md")
+
+    elif text.startswith("/broadcast"):
+        parts = text.split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+        if arg == "on":
+            data.setdefault("user_broadcast", {})[uid] = True
+            save_data(data)
+            await event.reply("📢 *Broadcast ON* — Ab sabhi groups mein same content jayega!", parse_mode="md")
+        elif arg == "off":
+            data.setdefault("user_broadcast", {})[uid] = False
+            save_data(data)
+            active_gid = get_active_gid(event.sender_id)
+            active_name = data["groups"][active_gid]["name"] if active_gid else "koi nahi"
+            await event.reply(f"📢 *Broadcast OFF* — Sirf active group: *{active_name}*", parse_mode="md")
+        else:
+            is_on = data.get("user_broadcast", {}).get(uid, False)
+            await event.reply(f"Broadcast: *{'ON 📢' if is_on else 'OFF'}*\nUse: `/broadcast on` ya `/broadcast off`", parse_mode="md")
+
+    elif text == "/start_posting":
+        gid = get_active_gid(event.sender_id)
+        if not gid:
+            await event.reply("❗ Pehle `/select <number>` se group choose karo.", parse_mode="md")
+            return
+        data["groups"][gid]["posting"] = True
+        save_data(data)
+        interval_min = data["groups"][gid].get("interval_sec", 3600) // 60
+        await event.reply(f"🟢 Posting start: *{data['groups'][gid]['name']}* (har {interval_min} min mein)", parse_mode="md")
+
+    elif text == "/stop_posting":
+        gid = get_active_gid(event.sender_id)
+        if not gid:
+            await event.reply("❗ Pehle `/select <number>` se group choose karo.", parse_mode="md")
+            return
+        data["groups"][gid]["posting"] = False
+        save_data(data)
+        await event.reply(f"🔴 Posting stop: *{data['groups'][gid]['name']}*", parse_mode="md")
+
+    elif text == "/start_all":
+        for g in data["groups"].values():
+            g["posting"] = True
+        save_data(data)
+        await event.reply("🟢 Sabhi groups ki posting start!", parse_mode="md")
+
+    elif text == "/stop_all":
+        for g in data["groups"].values():
+            g["posting"] = False
+        save_data(data)
+        await event.reply("🔴 Sabhi groups ki posting stop!", parse_mode="md")
+
+    elif text == "/clear":
+        gid = get_active_gid(event.sender_id)
+        if not gid:
+            await event.reply("❗ Pehle `/select <number>` se group choose karo.", parse_mode="md")
+            return
+        data["groups"][gid]["queue"] = []
+        save_data(data)
+        await event.reply(f"🗑️ Queue clear: *{data['groups'][gid]['name']}*", parse_mode="md")
+
+    elif text == "/status":
+        active_gid = get_active_gid(event.sender_id)
+        broadcast_on = data.get("user_broadcast", {}).get(uid, False)
+        msg = f"📊 *Status*\n📢 Broadcast: {'ON' if broadcast_on else 'OFF'}\n\n"
+        msg += groups_list_text(active_gid)
+        await event.reply(msg, parse_mode="md")
+
+    elif text == "/send_now":
+        gid = get_active_gid(event.sender_id)
+        if not gid:
+            await event.reply("❗ Pehle `/select <number>` se group choose karo.", parse_mode="md")
+            return
+        g = data["groups"][gid]
+        queue = g.get("queue", [])
+        if not queue:
+            await event.reply(f"📭 Queue khali: *{g['name']}*", parse_mode="md")
+            return
+        to_send = queue[:10]
+        g["queue"] = queue[10:]
+        g["last_sent"] = time.time()
+        save_data(data)
+        await event.reply(f"⏳ Bhej raha hoon {len(to_send)} items → *{g['name']}*...", parse_mode="md")
+        sent, errors = 0, []
+        for item in to_send:
+            try:
+                await send_item(item, gid)
+                sent += 1
+                await asyncio.sleep(1)
+            except Exception as e:
+                errors.append(str(e))
+        reply = f"✅ {sent}/{len(to_send)} bheje → *{g['name']}* (Queue: {len(g['queue'])} bache)"
+        if errors:
+            reply += "\n\n❌ Errors:\n" + "\n".join(errors[:3])
+        await event.reply(reply, parse_mode="md")
+
+    elif text == "/test_connection":
+        gid = get_active_gid(event.sender_id)
+        if not gid:
+            await event.reply("❗ Pehle `/select <number>` se group choose karo.", parse_mode="md")
+            return
+        try:
+            await client.send_message(int(gid), "🤖 Bot connection test!")
+            await event.reply(f"✅ Test message gaya → *{data['groups'][gid]['name']}*", parse_mode="md")
+        except Exception as e:
+            await event.reply(f"❌ Error: `{e}`", parse_mode="md")
+
+    elif text == "/help":
+        await event.reply(
+            "📋 *Commands:*\n\n"
+            "*🔍 ID Pata Karo:*\n"
+            "/getid — Group mein type karo → ID milegi\n"
+            "Ya koi msg *forward* karo bot ko → ID milegi\n"
+           ="md")
         try:
             from telethon.tl.functions.messages import ImportChatInviteRequest
             from telethon.tl.functions.channels import JoinChannelRequest
